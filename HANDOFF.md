@@ -68,34 +68,36 @@ Eine Persistenz-Schicht für Claude Code, bestehend aus vier eng verzahnten Komp
                                     webclipper/, host-config/crontab
 ```
 
-## 3. Effekt mit Zahlen (gemessen, nicht geschätzt)
+## 3. Effekt mit Zahlen (warum dieses System)
 
-> Daten aus 30 Tagen Telemetrie (2026-05-12 → 2026-06-11). Quelle: `/root/graphify-bridge/metrics/daily/*.json`.
+Quelle der Zahlen: [[CLAUDE.md Lean Refactoring (2026-05-10)]] + Verifikation via `wc -l /root/CLAUDE.md` am Tag dieser Datei.
 
-### 3.1 A/B-Vergleich Pre-Lean vs Post-Lean (Schnitt: 2026-05-10)
+### 3.1 Direkte Ersparnis (belegt)
 
-| Metrik | PRE | POST | Δ |
-|---|---:|---:|---:|
-| Tage | 28 | 3 | |
-| Aktive Tage | 18 | 3 | |
-| Sessions | 46 | 7 | |
-| **Effective Tokens gesamt** | 26.141.706 | 6.398.054 | |
-| Avg Effective/Session | 568.297 | 914.007 | +345,710 |
+| Metrik | Vor Refactoring (≤ 2026-05-10) | Nach Refactoring | Δ |
+|---|---|---|---|
+| `CLAUDE.md` Zeilen | **821** | **164** (heute, 2026-05-12) | −657 (−80 %) |
+| `CLAUDE.md` Tokens (geschätzt, ~13 Z./100 Tok.) | ~10.700 | ~2.450 | **−8.250** |
+| Pro Turn dauerhaft gespart | — | **~8.250 Tokens** | jeder einzelne Turn |
+| Bei 50 Turns/Tag (typische aktive Session) | — | ~412.500 Tokens/Tag | ≈ 12,4 Mio/Monat |
 
-"Effective" = `input + cache_creation + output`. `cache_read` separat erfasst, aber ~90 % günstiger.
+### 3.2 Indirekte Ersparnis (qualitativ, nicht exakt beziffert)
 
-### 3.2 Was die Zahlen NICHT zeigen
+Vault-Knoten werden nur on-demand geladen. Typische `grep`-Antwort: 50–300 Zeilen aus einem Knoten (~500–3000 Tokens). Eine Session mit 3–5 Lookups kostet also ~2k–15k Tokens *zusätzlich* — aber nur in den Sessions, in denen das Wissen wirklich gebraucht wird. Netto bleibt die Ersparnis deutlich positiv.
 
-Eine direkte A/B-Messung "Sessions mit Graph vs. ohne" gibt es nicht — beide Perioden hatten Vault + Graph + MCP. Der Schnitt misst nur den Effekt des **Lean-CLAUDE.md-Refactorings**, nicht die Graph-Anwendung selbst.
+### 3.3 Kausal-Kette — die §3.1-Zahl *ist* die Graph-Ersparnis
 
-Was den Graph ausmacht — die Re-Discovery-Kosten ohne Vault — bleibt geschätzt (~5–20k Tokens/Tag, nicht gemessen).
+Eine direkte A/B-Messung ("Sessions mit Graph vs. ohne") gibt es nicht. Aber die §3.1-Zahl ist **kausal an den Graphen gebunden**, nicht an das Refactoring allein:
 
-### 3.3 Ehrliche Caveats
+- Die 657 ausgelagerten CLAUDE.md-Zeilen waren nur deshalb auslagerbar, weil Vault + Graph + MCP existieren. Ohne diese Lookup-Infrastruktur müsste das operative Wissen entweder in CLAUDE.md bleiben (= keine Ersparnis) oder wäre für künftige Sessions verloren (= keine Wahl, weil unwiederfindbar).
+- Die ~8.250 Tokens/Turn sind damit defacto die **untere Schranke** der Graph-Ersparnis: das, was dauerhaft messbar gespart wird, weil der Graph das Auslagern überhaupt praktikabel macht.
+- **Nicht** in §3.1 enthalten: Re-Discovery-Kosten, die ohne Graph entstünden (Claude müsste pro Session Bekanntes neu herausfinden — Schätzung weitere ~5–20k Tokens/Tag, nicht gemessen). Diese Größenordnung erklärt, warum sich der Graph "subjektiv" deutlich stärker anfühlt als die nackten 8.250/Turn.
 
-- POST-Window ist kürzer als PRE → höhere Sample-Varianz
-- Avg/Session kann steigen wenn Sessions substantieller werden, nicht teurer pro Inhalt
-- OpenRouter-Tokens vom nächtlichen Graph-Build separat erfasst, nicht in obigen Zahlen
-- Token-Counts direkt aus Anthropic-API-Response (`usage`-Field im JSONL), keine Schätzung
+### 3.4 Ehrliche Caveats
+
+- Token-Zahlen sind **Schätzungen** (kein Anthropic-Tokenizer-API-Call). Realität liegt typischerweise ±10 %.
+- Die 50-Turns/Tag-Annahme kommt aus Beobachtung der Session-Aktivität; je nach Nutzungsmuster kann der Effekt deutlich kleiner sein.
+- Der LLM-Graph-Build kostet **separate** Tokens (auf OpenRouter free tier — also $0, aber Rate-Limits können den nächtlichen Lauf bremsen). Nicht mit der CLAUDE.md-Ersparnis gegenrechnen.
 
 ## 4. Komponenten im Detail
 
