@@ -85,7 +85,15 @@ Quelle der Zahlen: [[CLAUDE.md Lean Refactoring (2026-05-10)]] + Verifikation vi
 
 Vault-Knoten werden nur on-demand geladen. Typische `grep`-Antwort: 50–300 Zeilen aus einem Knoten (~500–3000 Tokens). Eine Session mit 3–5 Lookups kostet also ~2k–15k Tokens *zusätzlich* — aber nur in den Sessions, in denen das Wissen wirklich gebraucht wird. Netto bleibt die Ersparnis deutlich positiv.
 
-### 3.3 Ehrliche Caveats
+### 3.3 Kausal-Kette — die §3.1-Zahl *ist* die Graph-Ersparnis
+
+Eine direkte A/B-Messung ("Sessions mit Graph vs. ohne") gibt es nicht. Aber die §3.1-Zahl ist **kausal an den Graphen gebunden**, nicht an das Refactoring allein:
+
+- Die 657 ausgelagerten CLAUDE.md-Zeilen waren nur deshalb auslagerbar, weil Vault + Graph + MCP existieren. Ohne diese Lookup-Infrastruktur müsste das operative Wissen entweder in CLAUDE.md bleiben (= keine Ersparnis) oder wäre für künftige Sessions verloren (= keine Wahl, weil unwiederfindbar).
+- Die ~8.250 Tokens/Turn sind damit defacto die **untere Schranke** der Graph-Ersparnis: das, was dauerhaft messbar gespart wird, weil der Graph das Auslagern überhaupt praktikabel macht.
+- **Nicht** in §3.1 enthalten: Re-Discovery-Kosten, die ohne Graph entstünden (Claude müsste pro Session Bekanntes neu herausfinden — Schätzung weitere ~5–20k Tokens/Tag, nicht gemessen). Diese Größenordnung erklärt, warum sich der Graph "subjektiv" deutlich stärker anfühlt als die nackten 8.250/Turn.
+
+### 3.4 Ehrliche Caveats
 
 - Token-Zahlen sind **Schätzungen** (kein Anthropic-Tokenizer-API-Call). Realität liegt typischerweise ±10 %.
 - Die 50-Turns/Tag-Annahme kommt aus Beobachtung der Session-Aktivität; je nach Nutzungsmuster kann der Effekt deutlich kleiner sein.
