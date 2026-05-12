@@ -12,14 +12,21 @@ audience: human-and-llm
 
 ## 1. Was ist das System (TL;DR)
 
-Eine Persistenz-Schicht für Claude Code, bestehend aus vier eng verzahnten Komponenten:
+Eine Persistenz-Schicht für Claude Code, bestehend aus vier eng verzahnten Producer-Komponenten:
 
 1. **Obsidian-Vault** (`/docker/obsidian/vault/`) — flach, eine Markdown-Datei pro Knoten, im Container gemountet und über HTTPS als Web-UI erreichbar.
 2. **Graphify-Bridge** (`/root/graphify-bridge/`) — konvertiert Claude-Code-Sessions (JSONL) → Markdown, baut daraus täglich einen Knowledge-Graph (Nodes, Edges, Communities) mit einem **kostenlosen** LLM (OpenRouter free tier).
 3. **MCP-Server `graphify`** — stdio-Server, gibt Claude Code Lese-Tools auf den Graph (`get_node`, `get_neighbors`, `query_graph`, `shortest_path`, `god_nodes`, `graph_stats`).
 4. **GitHub-Repo-Spiegel** (`/root/jarvis-repo/` → `https://github.com/MartinKusterer/J.A.R.V.I.S.`) — alle Server-Skripte, der Vault und alle Configs werden in einen idempotenten Sync gepusht (mit Secret-Whitelist).
 
+… und zwei **Consumer-Komponenten** auf der OpenClaw-Seite (optional — der Vault funktioniert auch ohne, dann nur für Terminal-Claude), die den Vault als Kommunikations-Brücke nutzen:
+
+5. **Oracle-Agent** (OpenClaw Agent Index 13) — der **Vault-Gatekeeper auf OpenClaw-Seite**. Jarvis ruft ihn via `sessions_spawn oracle` auf, wenn eine User-Anfrage etwas im Knowledge-Graph erfordert. Oracle **liest** Vault-Knoten und kann **neue Knoten zurückschreiben** (Synthesen, Wiki-Verknüpfungen). Damit ist der Vault eine **bidirektionale Brücke**: Terminal-Claude schreibt rein → Oracle/Jarvis lesen → Oracle schreibt Synthesen zurück → nächste Terminal-Session sieht sie.
+6. **Jarvis Dreaming-Phase** (nightly Cron 03:00 Berlin im OpenClaw-Gateway) — drei-stufige Memory-Consolidation (Light → REM → Deep). Liest Vault + STM-Signale, verdichtet zu `MEMORY.md` (LTM) und schreibt `DREAMS.md` (human-readable Dream Diary). **Dadurch lernt Jarvis ohne Zutun, was Terminal-Claude tagsüber gemacht hat** — alles was im Vault landet, wird in der nächsten Nacht in Jarvis' Langzeit-Gedächtnis konsolidiert.
+
 **Zentrales Pattern**: `CLAUDE.md` (Boot-Instruktionen) wird in **jeden** Turn geladen und kostet daher pro Zeile dauerhaft Tokens. Operative Details liegen **nicht** in `CLAUDE.md`, sondern in Vault-Knoten, die nur **on-demand** gelesen werden (über `grep` oder den MCP-Server). Das spart messbar Tokens (siehe §3).
+
+**Zweites zentrales Pattern**: Der Vault ist **kein passiver Speicher**, sondern ein Kommunikations-Kanal zwischen zwei LLM-Welten. Terminal-Claude (Opus 4.7) und Jarvis (OpenClaw, schwächere Free-Tier-Modelle) leben getrennt — der Vault ist ihr gemeinsamer Schreibtisch. Was die eine Seite hinlegt, findet die andere am nächsten Tag.
 
 ## 2. Architektur-Diagramm
 
@@ -66,6 +73,51 @@ Eine Persistenz-Schicht für Claude Code, bestehend aus vier eng verzahnten Komp
                           spiegelt: vault/, scripts/, openclaw/,
                                     pixel-office/, jarvis-monitor/,
                                     webclipper/, host-config/crontab
+```
+
+### 2.1 Consumer-Side (OpenClaw, optional)
+
+Falls auf demselben Host **OpenClaw** läuft (multi-agent-Orchestration), wird der Vault dort als Lese-/Schreib-Quelle für zwei Use-Cases eingebunden:
+
+```
+   Vault (Host)               Mount                OpenClaw-Container
+   /docker/obsidian/vault  ────────────────►   /mnt/obsidian
+                                                       │
+                                                       ▼
+                                          ┌────────────────────────┐
+                                          │ Jarvis (Main Agent)    │
+                                          │ (User-Anfrage kommt    │
+                                          │  via WhatsApp/Butler)  │
+                                          └─────────┬──────────────┘
+                                                    │
+                       Wenn Frage Knowledge-Graph berührt:
+                       sessions_spawn oracle
+                                                    │
+                                                    ▼
+                                          ┌────────────────────────┐
+                                          │ Oracle (Agent #13)     │
+                                          │ kimi-k2.5 / nemotron   │
+                                          │  • liest /mnt/obsidian │
+                                          │  • antwortet Jarvis    │
+                                          │  • schreibt ggf. neue  │
+                                          │    Knoten zurück       │
+                                          └────────────────────────┘
+
+   ──── nachts 03:00 Berlin (OpenClaw-internes Cron) ────
+
+                                          ┌────────────────────────┐
+                                          │ Dreaming Sweep         │
+                                          │ Light → REM → Deep     │
+                                          │  liest: STM + Vault    │
+                                          │  schreibt: MEMORY.md   │
+                                          │           DREAMS.md    │
+                                          └────────────────────────┘
+
+   Effekt: Terminal-Claude legt tagsüber neue Knoten im Vault ab
+           → Oracle kann sie tagsüber on-demand zitieren
+           → Dreaming nimmt sie nachts in Jarvis' LTM auf
+           → nächster Morgen: Jarvis "weiß" was im Terminal passiert ist
+           (ohne dass Martin etwas weiterleiten musste).
 ```
 
 ## 3. Effekt mit Zahlen (warum dieses System)
@@ -193,6 +245,8 @@ Eine direkte A/B-Messung ("Sessions mit Graph vs. ohne") gibt es nicht. Aber die
 
 ### 4.5 Cron-Jobs (relevant für dieses System)
 
+**Host-Crontab** (Producer-Side):
+
 ```cron
 # Knowledge-Graph täglich rebuilden (03:30 Berlin = 02:30 UTC)
 30 3 * * * /root/graphify-bridge/daily-update.sh
@@ -202,7 +256,42 @@ Eine direkte A/B-Messung ("Sessions mit Graph vs. ohne") gibt es nicht. Aber die
           >> /var/log/jarvis-repo-sync.log 2>&1
 ```
 
-### 4.6 `CLAUDE.md` — die Lean-Regel
+**OpenClaw-interner Scheduler** (Consumer-Side, optional — nur falls Jarvis-Dreaming gewünscht):
+
+Dreaming läuft **nicht** als Host-Cron, sondern als plugin-internes Schedule im OpenClaw-Gateway. Config-Pfad:
+
+```bash
+docker exec openclaw-<id>-openclaw-1 \
+  openclaw config get plugins.entries.memory-core.config.dreaming
+# → { "enabled": true, "timezone": "Europe/Berlin", "phases": { ... } }
+```
+
+Default-Timeout des Gateway-SystemEvent-Schedulers wurde von 10 min auf 30 min hochgepatcht, sonst killt der Watchdog die Deep-Phase mitten in der Promotion (siehe [[cron-systemevent-timeout-patch-20260420]]). Bei OpenClaw-Updates muss der Patch ggf. re-appliziert werden.
+
+### 4.6 Oracle-Agent (Consumer-Side, OpenClaw-spezifisch)
+
+- **Was**: OpenClaw-Agent (Index 13), Spezialist für Vault-Queries.
+- **Modell**: `nvidia/moonshotai/kimi-k2.5` primary, `nvidia/nvidia/llama-3.1-nemotron-ultra-253b-v1:free` fallback. Synthese-starke Modelle (kein Coder-Pool — Oracle macht semantische Verknüpfung, keine Tool-Heavy-Calls).
+- **Aufruf**: Jarvis delegiert via `sessions_spawn oracle "<query>"`. Funktioniert nur, wenn `tools.agentToAgent.enabled = true` UND `/data/.openclaw/workspace/AGENTS.md` Oracle in der Delegations-Sektion listet (siehe [[Oracle Reaktivierung - Model + Delegations-Fix (2026-04-20)]] — beide Punkte waren bis 2026-04-20 falsch konfiguriert, Oracle lag de-facto brach).
+- **Vault-Zugriff**: Container-Mount `/mnt/obsidian/` = Host-`/docker/obsidian/vault/`. Oracle hat `workspaceAccess: "rw"` für `/mnt/obsidian/` — kann **lesen UND schreiben**.
+- **Schreibt zurück**: Synthesen, Wiki-Link-Reparaturen, neue Diskussions-Knoten aus Jarvis-Konversationen. Frontmatter `author: oracle` macht Bot-Edits identifizierbar.
+- **Off-Switch**: `tools.agentToAgent.enabled = false` deaktiviert Delegation (Jarvis fällt zurück auf "weiß ich nicht").
+
+### 4.7 Jarvis Dreaming-Phase (Consumer-Side, OpenClaw-spezifisch)
+
+- **Was**: Nächtliche Memory-Consolidation, drei Phasen seriell. Ersetzte das alte `qmd`-System (CPU-Überlast-Inzident — siehe [[qmd CPU Overload Incident]]).
+- **Trigger**: OpenClaw-interner Cron `0 3 * * *` Europe/Berlin (im Gateway, nicht im Host-Crontab). Default-Timeout 30 min (von 10 min hochgepatcht, siehe [[cron-systemevent-timeout-patch-20260420]]).
+- **Phasen**:
+  - **Light**: STM-Signale aus `/data/.openclaw/lcm.db` sammeln, dedup, Kandidaten für Promotion stagen.
+  - **REM**: Themen + Muster aus Tagessessions extrahieren, Reflexions-Signale.
+  - **Deep**: Scored Promotion (`minScore=0.8`, `minRecallCount=3`, `minUniqueQueries=3`) → `MEMORY.md` (LTM).
+- **Schreibt**:
+  - `MEMORY.md` — LTM-Zusammenfassung, in alle Sandboxes via Host-Pfade gesymlinked, von Agents als Read-Only-Quelle verwendet.
+  - `DREAMS.md` (Dream Diary) — human-readable Bericht jeder Nacht.
+- **Liest Vault**: Vault-Knoten (Mount `/mnt/obsidian/`) fließen mit in die Deep-Phase ein, weil Dreaming sie als zusätzliches Korpus für Promotion-Scoring berücksichtigt. → **Was Terminal-Claude tagsüber an Vault-Knoten schreibt, ist nächsten Morgen in Jarvis' Langzeit-Gedächtnis** ohne weitere Aktion.
+- **Diagnose bei Fehlschlag**: Dreaming-Log im OpenClaw-Gateway. Wenn `MEMORY.md` Drift zeigt (z.B. >12 kB durch Self-Reference-Spam → OOM), siehe Memory-Note `jarvis-memoryMd-overflow-20260420.md`.
+
+### 4.8 `CLAUDE.md` — die Lean-Regel
 
 - **Pfad**: `/root/CLAUDE.md` (projekt-spezifisch, wird in jedem Turn geladen).
 - **Hartes Limit**: **200 Zeilen**, in einer Meta-Regel am Anfang der Datei verankert. Diese Regel darf laut Feedback-Memory **nur Martin selbst** widerrufen.
@@ -372,6 +461,8 @@ crontab -e
 - **Kein Geheimnis-Schutz im Vault**: Wer Vault-Zugriff hat, sieht alles. Sensible Passwörter / API-Keys gehören in `.env`-Files, die per Excludes-Liste **nie** gespiegelt werden.
 - **Token-Zahlen sind Schätzungen**: ±10 % Realitäts-Abweichung wahrscheinlich. Wer es exakt will, sollte den Anthropic-Tokenizer-Endpoint nutzen.
 - **CLAUDE.md-Drift**: Die 200-Zeilen-Regel wird nicht automatisch durchgesetzt. Aktuell 164 (war: 154) — wer kein Auge drauf hat, riskiert wieder >300 Zeilen über Monate.
+- **Consumer-Side ist OpenClaw-spezifisch**: §4.6 (Oracle) und §4.7 (Dreaming) setzen einen laufenden OpenClaw-Container voraus. Ohne OpenClaw funktioniert die Producer-Seite (§4.1–§4.5) eigenständig — der Vault wird dann nur von Terminal-Claude gelesen, es gibt keinen nightly Memory-Consolidation-Loop. Wer das Pattern ohne OpenClaw nachbauen will: einen eigenen Cron-Job schreiben, der den Vault per LLM zusammenfasst und in eine eigene `MEMORY.md` schreibt.
+- **Oracle-Antwort hängt am LLM-Anbieter**: Oracle nutzt OpenRouter `:free`/NVIDIA-Modelle für die Synthese. Bei Provider-Ausfall fällt Jarvis still zurück auf "kein Knoten gefunden", obwohl es im Vault stünde — schwer von Cache-Miss zu unterscheiden. Im Zweifel: Oracle-Session-Log im OpenClaw-Gateway prüfen.
 
 ## 8. Wartung
 
@@ -380,6 +471,8 @@ crontab -e
 - `tail -100 /var/log/graphify/daily-update.log` — saubere Läufe?
 - `tail -50 /var/log/jarvis-repo-sync.log` — keine Sync-Konflikte?
 - `ls /root/graphify-bridge/NEEDS_GRAPH_UPDATE` — Flag weg?
+- Consumer-Side (falls OpenClaw): hat Jarvis-Dreaming neue `DREAMS.md`-Einträge der letzten 3 Nächte? `grep -c "^## " /docker/obsidian/vault/DREAMS.md*` — wenn Wachstum stagniert: Dreaming-Crash, Gateway-Logs prüfen.
+- Consumer-Side: spawnt Jarvis Oracle bei passenden Queries? `docker logs openclaw-<id>-openclaw-1 | grep -i "sessions_spawn.*oracle"` — null Hits über Tage ist verdächtig (siehe Inzident 2026-04-18, [[Oracle Reaktivierung - Model + Delegations-Fix (2026-04-20)]]).
 
 ### 8.2 Bei Hash-Drift / Korpus-Reset
 ```bash
