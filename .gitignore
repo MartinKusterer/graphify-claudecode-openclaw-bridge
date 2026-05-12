@@ -5,6 +5,9 @@ conversations/
 # Generated graph artifacts (may embed extracted entities from private conversations)
 graphify-out/
 
+# Private token telemetry (30-day measurement project, jarvis-repo private mirror only)
+metrics/
+
 # State files
 .last-hash
 NEEDS_GRAPH_UPDATE
