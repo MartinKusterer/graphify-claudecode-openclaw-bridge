@@ -1,0 +1,33 @@
+# --- Sensitive runtime data (NEVER commit) ---
+# Claude Code conversation dumps (personal chat history)
+conversations/
+
+# Generated graph artifacts (may embed extracted entities from private conversations)
+graphify-out/
+
+# State files
+.last-hash
+NEEDS_GRAPH_UPDATE
+
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# --- Python ---
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+
+# --- Editor / OS ---
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*~
